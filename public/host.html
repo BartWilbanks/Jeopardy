@@ -1,0 +1,243 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Host — Jeopardy Live</title>
+  <style>
+    body{font-family:system-ui;margin:0;padding:14px;background:#0b1027;color:#f6f7ff}
+    button,input,select{font-size:16px;padding:10px;border-radius:10px;border:1px solid #3a447a;background:#111a44;color:#f6f7ff}
+    button{cursor:pointer}
+    .row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+    .board{display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin-top:12px}
+    .cell{padding:12px;border:1px solid #2d3566;border-radius:12px;text-align:center}
+    .cat{font-weight:800;background:#121b4a}
+    .tile{font-weight:900;color:#ffcc33;background:#0f163f}
+    .used{opacity:.25}
+    .panel{margin-top:12px;border:1px solid #2d3566;border-radius:12px;padding:12px}
+    .modal{position:fixed;inset:0;background:rgba(0,0,0,.7);display:none;align-items:center;justify-content:center;padding:14px}
+    .modal.show{display:flex}
+    .box{max-width:900px;width:100%;background:#0f163f;border:1px solid #2d3566;border-radius:16px;padding:14px}
+    .big{font-size:28px;font-weight:900;line-height:1.2;white-space:pre-wrap}
+    .gold{color:#ffcc33}
+    .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 8px;border-radius:999px;border:1px solid #3a447a;color:#cdd3ff;font-size:12px}
+  </style>
+</head>
+<body>
+  <div class="row">
+    <input id="hostName" placeholder="Host name (optional)" />
+    <select id="mode">
+      <option value="BUZZER">Buzzer mode</option>
+      <option value="TURNS">Take turns</option>
+    </select>
+    <button id="create">Create Room</button>
+    <div id="code" style="font-weight:900;font-size:18px;"></div>
+  </div>
+
+  <div class="panel" id="topPanel" style="display:none;">
+    <div class="row" style="justify-content:space-between;align-items:flex-start;">
+      <div>
+        <div><b>Invite players:</b> <span id="inviteLink"></span></div>
+        <div class="row" style="margin-top:8px;">
+          <span class="pill" id="playersCount">0 players</span>
+          <span class="pill" id="modePill">Mode: —</span>
+          <span class="pill" id="turnPill" style="display:none;">Turn: —</span>
+          <span class="pill" id="buzzPill" style="display:none;">Buzz: —</span>
+        </div>
+      </div>
+      <div class="row">
+        <label class="pill"><input id="keepScores" type="checkbox" checked style="transform:scale(1.1);"> Keep scores</label>
+        <button id="newRound">New Round</button>
+        <button id="unlockBuzzer" style="display:none;">Unlock Buzzer</button>
+        <button id="nextTurn" style="display:none;">Next Turn</button>
+      </div>
+    </div>
+  </div>
+
+  <div class="panel" id="scores"></div>
+  <div class="board" id="board"></div>
+
+  <div class="modal" id="modal">
+    <div class="box">
+      <div class="row" style="justify-content:space-between">
+        <div id="meta"></div>
+        <div class="row">
+          <button id="showAns">Show Answer</button>
+          <button id="close">Close</button>
+        </div>
+      </div>
+      <div class="big" id="text"></div>
+    </div>
+  </div>
+
+  <script src="/socket.io/socket.io.js"></script>
+  <script>
+    const ioClient = io();
+    let roomCode = null;
+    let state = null;
+
+    const elBoard = document.getElementById("board");
+    const elScores = document.getElementById("scores");
+    const elCode = document.getElementById("code");
+    const topPanel = document.getElementById("topPanel");
+    const inviteLink = document.getElementById("inviteLink");
+    const playersCount = document.getElementById("playersCount");
+    const modePill = document.getElementById("modePill");
+    const turnPill = document.getElementById("turnPill");
+    const buzzPill = document.getElementById("buzzPill");
+
+    const keepScores = document.getElementById("keepScores");
+    const btnNewRound = document.getElementById("newRound");
+    const btnUnlockBuzzer = document.getElementById("unlockBuzzer");
+    const btnNextTurn = document.getElementById("nextTurn");
+
+    const modal = document.getElementById("modal");
+    const meta = document.getElementById("meta");
+    const text = document.getElementById("text");
+
+    document.getElementById("create").onclick = () => {
+      ioClient.emit("host:createRoom", {
+        hostName: document.getElementById("hostName").value,
+        mode: document.getElementById("mode").value
+      });
+    };
+
+    document.getElementById("showAns").onclick = () => {
+      if(roomCode) ioClient.emit("host:showAnswer", { code: roomCode });
+    };
+
+    document.getElementById("close").onclick = () => {
+      if(roomCode) ioClient.emit("host:closeClue", { code: roomCode, markUsed: true });
+      modal.classList.remove("show");
+    };
+
+    btnNewRound.onclick = () => {
+      if(!roomCode) return;
+      ioClient.emit("host:newRound", { code: roomCode, keepScores: keepScores.checked });
+    };
+
+    btnUnlockBuzzer.onclick = () => {
+      if(!roomCode) return;
+      ioClient.emit("host:unlockBuzzer", { code: roomCode });
+    };
+
+    btnNextTurn.onclick = () => {
+      if(!roomCode) return;
+      ioClient.emit("host:nextTurn", { code: roomCode });
+    };
+
+    ioClient.on("room:created", ({ code, state: st }) => {
+      roomCode = code; state = st;
+      elCode.textContent = `Room Code: ${code}`;
+      topPanel.style.display = "block";
+      inviteLink.textContent = `${location.origin}/player.html`;
+      render();
+    });
+
+    ioClient.on("room:update", ({ state: st }) => {
+      state = st;
+      render();
+    });
+
+    ioClient.on("room:ended", () => {
+      alert("Host disconnected. Room ended.");
+      location.reload();
+    });
+
+    function render(){
+      if(!state) return;
+
+      playersCount.textContent = `${state.players.length} players`;
+      modePill.textContent = `Mode: ${state.mode}`;
+
+      // Mode controls
+      if(state.mode === "BUZZER"){
+        btnUnlockBuzzer.style.display = "inline-block";
+        btnNextTurn.style.display = "none";
+        turnPill.style.display = "none";
+        buzzPill.style.display = "inline-flex";
+        buzzPill.textContent = state.buzzer.locked
+          ? `Buzz: ${state.buzzer.winner?.name || "Locked"} (${state.teams[state.buzzer.winner?.teamIndex ?? 0]?.name || "Team"})`
+          : "Buzz: Open";
+      } else {
+        btnUnlockBuzzer.style.display = "none";
+        btnNextTurn.style.display = "inline-block";
+        buzzPill.style.display = "none";
+        turnPill.style.display = "inline-flex";
+        turnPill.textContent = `Turn: ${state.teams[state.turn.teamIndex]?.name || "Team"}`;
+      }
+
+      renderScores();
+      renderBoard();
+      renderModal();
+    }
+
+    function renderScores(){
+      elScores.innerHTML = "";
+
+      state.teams.forEach((t, idx) => {
+        const wrap = document.createElement("div");
+        wrap.className = "row";
+        wrap.style.marginTop = "10px";
+        wrap.innerHTML = `
+          <input value="${t.name}" data-team="${idx}" style="min-width:160px" />
+          <div style="font-weight:900;color:#ffcc33;font-size:18px">${t.score}</div>
+          <button data-add="${idx}">+100</button>
+          <button data-sub="${idx}">-100</button>
+          <button data-turn="${idx}" style="${state.mode === "TURNS" ? "" : "display:none;"}">Set Turn</button>
+        `;
+        elScores.appendChild(wrap);
+      });
+
+      elScores.querySelectorAll("input[data-team]").forEach(inp => {
+        inp.onchange = () => ioClient.emit("host:renameTeam", { code: roomCode, teamIndex: inp.dataset.team, name: inp.value });
+      });
+
+      elScores.querySelectorAll("button[data-add]").forEach(btn => {
+        btn.onclick = () => ioClient.emit("host:score", { code: roomCode, teamIndex: btn.dataset.add, delta: 100 });
+      });
+      elScores.querySelectorAll("button[data-sub]").forEach(btn => {
+        btn.onclick = () => ioClient.emit("host:score", { code: roomCode, teamIndex: btn.dataset.sub, delta: -100 });
+      });
+
+      elScores.querySelectorAll("button[data-turn]").forEach(btn => {
+        btn.onclick = () => ioClient.emit("host:setTurn", { code: roomCode, teamIndex: btn.dataset.turn });
+      });
+    }
+
+    function renderBoard(){
+      elBoard.innerHTML = "";
+      state.game.categories.forEach(cat => {
+        const c = document.createElement("div");
+        c.className = "cell cat";
+        c.textContent = cat.name;
+        elBoard.appendChild(c);
+      });
+
+      for(let r=0;r<5;r++){
+        for(let c=0;c<6;c++){
+          const clue = state.game.categories[c].clues[r];
+          const div = document.createElement("div");
+          div.className = "cell tile" + (clue.used ? " used" : "");
+          div.textContent = clue.used ? "" : `$${clue.value}`;
+          div.onclick = () => {
+            if(clue.used) return;
+            ioClient.emit("host:pickClue", { code: roomCode, catIdx: c, rowIdx: r });
+          };
+          elBoard.appendChild(div);
+        }
+      }
+    }
+
+    function renderModal(){
+      if(!state.active){ modal.classList.remove("show"); return; }
+      const {catIdx,rowIdx,showing} = state.active;
+      const cat = state.game.categories[catIdx];
+      const clue = cat.clues[rowIdx];
+      meta.textContent = `${cat.name} — $${clue.value} — ${showing === "q" ? "Question" : "Answer"}${clue.dd ? " (Daily Double)" : ""}`;
+      text.innerHTML = showing === "q" ? clue.q : `<span class="gold">${clue.a}</span>`;
+      modal.classList.add("show");
+    }
+  </script>
+</body>
+</html>
