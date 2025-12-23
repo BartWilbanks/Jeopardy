@@ -1,5 +1,6 @@
-// server.js — Jeopardy Live + Online Random Questions (OpenTDB) with robust retries/pooling
-
+// server.js — Jeopardy Live (multiplayer) with 3000-question local bank (no external APIs)
+const fs = require("fs");
+const path = require("path");
 const express = require("express");
 const http = require("http");
 const { Server } = require("socket.io");
@@ -8,12 +9,25 @@ const app = express();
 const server = http.createServer(app);
 const io = new Server(server);
 
-app.use(express.static("public"));
+// Serve static site
+app.use(express.static(path.join(__dirname, "public")));
 
-/**
- * In-memory rooms (fine for family games / small groups).
- * If you ever want persistence or many concurrent rooms, use Redis.
- */
+// Load question bank (3000)
+const BANK_PATH = path.join(__dirname, "public", "questions_3000.json");
+let QUESTION_BANK = [];
+try {
+  QUESTION_BANK = JSON.parse(fs.readFileSync(BANK_PATH, "utf8"));
+  console.log(`Loaded ${QUESTION_BANK.length} questions from ${BANK_PATH}`);
+} catch (e) {
+  console.error("Failed to load question bank:", e);
+}
+
+// Game configuration
+const CATEGORIES = ["Math", "Science", "Sports", "Pop Culture", "Family Trivia", "Geography"];
+const VALUE_ROWS = [100, 200, 300, 400, 500];
+const DIFF_BY_ROW = ["easy", "easy", "medium", "medium", "hard"]; // 5th grade -> adult ramp
+
+// In-memory rooms
 const rooms = new Map();
 
 function makeCode(len = 5) {
@@ -22,51 +36,11 @@ function makeCode(len = 5) {
   for (let i = 0; i < len; i++) s += chars[Math.floor(Math.random() * chars.length)];
   return s;
 }
-
 function clampTeam(n) {
   n = Number(n);
   if (!Number.isFinite(n)) return 0;
   return Math.max(0, Math.min(2, n));
 }
-
-/* =========================
-   Open Trivia DB integration
-   ========================= */
-
-let OPENTDB_TOKEN = null;
-
-async function getToken() {
-  if (OPENTDB_TOKEN) return OPENTDB_TOKEN;
-  try {
-    const r = await fetch("https://opentdb.com/api_token.php?command=request");
-    const j = await r.json();
-    OPENTDB_TOKEN = j?.token || null;
-    return OPENTDB_TOKEN;
-  } catch {
-    OPENTDB_TOKEN = null;
-    return null;
-  }
-}
-
-async function resetToken() {
-  OPENTDB_TOKEN = null;
-  return getToken();
-}
-
-// OpenTDB returns HTML entities — decode common ones
-function decodeHTMLEntities(str = "") {
-  return String(str)
-    .replaceAll("&quot;", '"')
-    .replaceAll("&#039;", "'")
-    .replaceAll("&amp;", "&")
-    .replaceAll("&lt;", "<")
-    .replaceAll("&gt;", ">")
-    .replaceAll("&eacute;", "é")
-    .replaceAll("&rsquo;", "’")
-    .replaceAll("&ldquo;", "“")
-    .replaceAll("&rdquo;", "”");
-}
-
 function shuffle(arr) {
   const a = arr.slice();
   for (let i = a.length - 1; i > 0; i--) {
@@ -76,135 +50,53 @@ function shuffle(arr) {
   return a;
 }
 
-// Your requested categories mapped to OpenTDB category IDs
-const OPENTDB_CATEGORIES = [
-  { name: "Math", id: 19 },           // Science: Mathematics
-  { name: "Science", id: 17 },        // Science & Nature
-  { name: "Sports", id: 21 },         // Sports
-  { name: "Pop Culture", id: 11 },    // Entertainment: Film (solid pop-culture bucket)
-  { name: "Family Trivia", id: 9 },   // General Knowledge
-  { name: "Geography", id: 22 }       // Geography
-];
-
-const VALUE_ROWS = [100, 200, 300, 400, 500];
-// Approx “5th grade -> adult” by ramping difficulty up the board
-const DIFF_BY_ROW = ["easy", "easy", "medium", "medium", "hard"];
-
-/**
- * OpenTDB response_code:
- * 0 = success
- * 1 = no results
- * 2 = invalid parameter
- * 3 = token not found
- * 4 = token empty
- */
-function isTokenProblem(code) {
-  return code === 3 || code === 4;
+function getPool(category, difficulty) {
+  return QUESTION_BANK.filter(q => q.category === category && q.difficulty === difficulty);
 }
 
 /**
- * Fetch a pool of questions with a multi-step fallback strategy so it almost never returns empty.
- * We try:
- *  1) category + difficulty + type=multiple
- *  2) category + difficulty + any type
- *  3) category only + type=multiple
- *  4) category only + any type
+ * Picks a question from pool that hasn't been used in this room (best-effort).
+ * If everything is used, it will reuse.
  */
-async function fetchPool({ categoryId, difficulty, token, amount = 10 }) {
-  const attempts = [
-    { difficulty, type: "multiple" },
-    { difficulty, type: null },
-    { difficulty: null, type: "multiple" },
-    { difficulty: null, type: null }
-  ];
+function pickQuestion(room, category, difficulty) {
+  const pool = getPool(category, difficulty);
+  if (!pool.length) return null;
 
-  for (const a of attempts) {
-    let url = `https://opentdb.com/api.php?amount=${amount}&category=${categoryId}`;
-    if (a.difficulty) url += `&difficulty=${a.difficulty}`;
-    if (a.type) url += `&type=${a.type}`;
-    if (token) url += `&token=${token}`;
-
-    const r = await fetch(url);
-    const j = await r.json();
-
-    if (isTokenProblem(j?.response_code)) return { tokenProblem: true };
-    if (j?.response_code === 0 && Array.isArray(j.results) && j.results.length) {
-      // Normalize Q/A text
-      const normalized = j.results
-        .map(item => ({
-          q: decodeHTMLEntities(item.question),
-          a: decodeHTMLEntities(item.correct_answer)
-        }))
-        .filter(x => x.q && x.a);
-
-      if (normalized.length) return { items: normalized };
-    }
-  }
-
-  return { items: [] };
+  const unused = pool.filter(q => !room.usedQuestionIds.has(q.id));
+  const pickFrom = unused.length ? unused : pool;
+  const q = pickFrom[Math.floor(Math.random() * pickFrom.length)];
+  room.usedQuestionIds.add(q.id);
+  return q;
 }
 
-function fallbackClue(catName, value, diff) {
-  return {
-    value,
-    q: `[${catName}] (${diff}) — Couldn’t fetch an online question. Click “New Round”.`,
-    a: `No answer (API unavailable)`,
-    used: false,
-    dd: false
-  };
-}
-
-/**
- * Build a full Jeopardy board from OpenTDB.
- * Uses pools + retries + token reset to avoid blanks.
- */
-async function buildGameFromOpenTDB() {
-  let token = await getToken();
-
+function buildGameFromBank(room) {
   const categories = [];
 
-  for (const cat of OPENTDB_CATEGORIES) {
-    // For each row difficulty, fetch a pool and take 1 from it.
+  for (let c = 0; c < CATEGORIES.length; c++) {
+    const name = CATEGORIES[c];
     const clues = [];
 
-    for (let i = 0; i < VALUE_ROWS.length; i++) {
-      const value = VALUE_ROWS[i];
-      const diff = DIFF_BY_ROW[i];
+    for (let r = 0; r < VALUE_ROWS.length; r++) {
+      const value = VALUE_ROWS[r];
+      const diff = DIFF_BY_ROW[r];
+      const q = pickQuestion(room, name, diff);
 
-      try {
-        let pool = await fetchPool({ categoryId: cat.id, difficulty: diff, token, amount: 10 });
-
-        // Token exhausted/invalid -> reset once and retry
-        if (pool.tokenProblem) {
-          token = await resetToken();
-          pool = await fetchPool({ categoryId: cat.id, difficulty: diff, token, amount: 10 });
-        }
-
-        const items = pool.items || [];
-        if (!items.length) {
-          clues.push(fallbackClue(cat.name, value, diff));
-        } else {
-          const pick = items[Math.floor(Math.random() * items.length)];
-          clues.push({
-            value,
-            q: pick.q,
-            a: pick.a,
-            used: false,
-            dd: false
-          });
-        }
-      } catch {
-        clues.push(fallbackClue(cat.name, value, diff));
-      }
+      clues.push({
+        value,
+        q: q ? q.question : `[${name}] No question found`,
+        a: q ? q.answer : "No answer",
+        used: false,
+        dd: false
+      });
     }
 
-    categories.push({ name: cat.name, clues });
+    categories.push({ name, clues });
   }
 
-  // Add 2 Daily Doubles (not in the first row)
+  // Add 2 Daily Doubles (not in row 0)
   const ddPositions = new Set();
   while (ddPositions.size < 2) {
-    const p = Math.floor(Math.random() * 30); // 6 cols * 5 rows
+    const p = Math.floor(Math.random() * 30); // 6x5
     const row = Math.floor(p / 6);
     if (row === 0) continue;
     ddPositions.add(p);
@@ -212,38 +104,18 @@ async function buildGameFromOpenTDB() {
   for (const p of ddPositions) {
     const col = p % 6;
     const row = Math.floor(p / 6);
-    if (categories[col]?.clues?.[row]) categories[col].clues[row].dd = true;
+    categories[col].clues[row].dd = true;
   }
 
-  // Final Jeopardy — pull a harder general knowledge pool
-  let finalQ = "Final Jeopardy question unavailable (try New Round)";
-  let finalA = "No answer";
-  try {
-    let token2 = await getToken();
-    let pool = await fetchPool({ categoryId: 9, difficulty: "hard", token: token2, amount: 10 });
-    if (pool.tokenProblem) {
-      token2 = await resetToken();
-      pool = await fetchPool({ categoryId: 9, difficulty: "hard", token: token2, amount: 10 });
-    }
-    if (pool.items?.length) {
-      const pick = pool.items[Math.floor(Math.random() * pool.items.length)];
-      finalQ = pick.q;
-      finalA = pick.a;
-    }
-  } catch {
-    // keep fallback
-  }
+  // Final Jeopardy: hard family trivia
+  const fj = pickQuestion(room, "Family Trivia", "hard") || pickQuestion(room, "Pop Culture", "hard") || pickQuestion(room, "Science", "hard");
 
   return {
     title: "Jeopardy Live",
     categories,
-    final: { category: "Final Jeopardy", q: finalQ, a: finalA }
+    final: { category: "Final Jeopardy", q: fj ? fj.question : "Final question", a: fj ? fj.answer : "Answer" }
   };
 }
-
-/* =========================
-   Room state + socket logic
-   ========================= */
 
 function publicState(room) {
   return {
@@ -259,9 +131,21 @@ function publicState(room) {
   };
 }
 
+// Simple health + debug endpoint
+app.get("/debug/bank", (req, res) => {
+  const counts = {};
+  for (const cat of CATEGORIES) {
+    counts[cat] = { easy: 0, medium: 0, hard: 0 };
+  }
+  for (const q of QUESTION_BANK) {
+    if (counts[q.category] && counts[q.category][q.difficulty] !== undefined) counts[q.category][q.difficulty]++;
+  }
+  res.json({ loaded: QUESTION_BANK.length, counts });
+});
+
 io.on("connection", (socket) => {
   // Host creates room
-  socket.on("host:createRoom", async ({ hostName, mode }) => {
+  socket.on("host:createRoom", ({ hostName, mode }) => {
     let code = makeCode();
     while (rooms.has(code)) code = makeCode();
 
@@ -276,11 +160,15 @@ io.on("connection", (socket) => {
         { name: "Team 2", score: 0 },
         { name: "Team 3", score: 0 }
       ],
-      game: await buildGameFromOpenTDB(),
+      usedQuestionIds: new Set(),
+      game: null,
       active: null,
       turn: { teamIndex: 0 },
       buzzer: { locked: false, winner: null }
     };
+
+    // Build the board (from local bank)
+    room.game = buildGameFromBank(room);
 
     rooms.set(code, room);
     socket.join(code);
@@ -294,6 +182,7 @@ io.on("connection", (socket) => {
 
     socket.join(code);
     room.players.set(socket.id, {
+      id: socket.id,
       name: (playerName?.trim() || "Player").slice(0, 25),
       teamIndex: clampTeam(teamIndex)
     });
@@ -312,6 +201,7 @@ io.on("connection", (socket) => {
 
     room.active = { catIdx, rowIdx, showing: "q" };
     room.buzzer = { locked: false, winner: null };
+
     io.to(code).emit("room:update", { state: publicState(room) });
   });
 
@@ -336,7 +226,6 @@ io.on("connection", (socket) => {
       if (clue) clue.used = true;
     }
     room.active = null;
-
     io.to(code).emit("room:update", { state: publicState(room) });
   });
 
@@ -362,7 +251,7 @@ io.on("connection", (socket) => {
     io.to(code).emit("room:update", { state: publicState(room) });
   });
 
-  // TURNS: set/next turn
+  // TURNS mode: set / next turn
   socket.on("host:setTurn", ({ code, teamIndex }) => {
     const room = rooms.get(code);
     if (!room || room.hostSocketId !== socket.id) return;
@@ -379,7 +268,7 @@ io.on("connection", (socket) => {
     io.to(code).emit("room:update", { state: publicState(room) });
   });
 
-  // BUZZER: players buzz
+  // BUZZER mode: players buzz in
   socket.on("player:buzz", ({ code }) => {
     const room = rooms.get(code);
     if (!room) return;
@@ -405,12 +294,12 @@ io.on("connection", (socket) => {
     io.to(code).emit("room:update", { state: publicState(room) });
   });
 
-  // Host new round (fresh online board)
-  socket.on("host:newRound", async ({ code, keepScores }) => {
+  // Host new round (fresh random board from bank)
+  socket.on("host:newRound", ({ code, keepScores }) => {
     const room = rooms.get(code);
     if (!room || room.hostSocketId !== socket.id) return;
 
-    room.game = await buildGameFromOpenTDB();
+    room.game = buildGameFromBank(room);
     room.active = null;
     room.buzzer = { locked: false, winner: null };
 

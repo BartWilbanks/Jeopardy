@@ -1,11 +1,14 @@
 {
-  "name": "jeopardy-live-wp",
+  "name": "jeopardy-live-3000-bank",
   "version": "1.0.0",
-  "description": "Jeopardy-style live multiplayer web app (Host + Players) with Buzzer or Turn-based mode. Deploy on a subdomain alongside WordPress.",
+  "private": true,
+  "description": "Jeopardy-style multiplayer web game with local 3000-question bank",
   "main": "server.js",
-  "type": "commonjs",
   "scripts": {
     "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "express": "^4.19.2",
