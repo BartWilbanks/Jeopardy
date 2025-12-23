@@ -1,0 +1,78 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Host — Jeopardy Live</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+<header>
+  <div>
+    <h1>Jeopardy Live — Host</h1>
+    <small>Mirror this tab to TV • Share Player link with phones</small>
+  </div>
+  <div class="row">
+    <span class="pill" id="roomPill">Room: —</span>
+    <span class="pill" id="playersPill">Players: 0</span>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="card">
+    <div class="row">
+      <input id="hostName" placeholder="Host name (optional)" />
+      <select id="mode">
+        <option value="BUZZER">Buzzer mode</option>
+        <option value="TURNS">Take turns</option>
+      </select>
+      <button class="primary" id="createRoom">Create Room</button>
+    </div>
+
+    <div style="margin-top:12px">
+      <div><small>Invite players:</small></div>
+      <div class="row" style="margin-top:6px">
+        <input id="inviteLink" readonly style="flex:1" />
+        <button id="copyInvite">Copy</button>
+      </div>
+      <small>Players open the link and enter the room code.</small>
+    </div>
+
+    <div style="margin-top:14px" class="row">
+      <button class="good" id="newRound">New Round</button>
+      <label class="pill"><input type="checkbox" id="keepScores" checked /> Keep scores</label>
+      <button id="unlockBuzzer" class="primary">Unlock Buzzer</button>
+      <button id="nextTurn" class="primary">Next Turn</button>
+    </div>
+
+    <div style="margin-top:14px">
+      <strong>Scoreboard</strong>
+      <div id="scoreboard"></div>
+      <div style="margin-top:8px"><small id="modeHint">—</small></div>
+      <div style="margin-top:8px" id="buzzStatus"></div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="board" id="board"></div>
+  </div>
+</div>
+
+<div class="modal" id="modal">
+  <div class="box">
+    <div class="top">
+      <h2 id="modalTitle">—</h2>
+      <div class="row">
+        <button id="showAnswer" class="primary">Show Answer</button>
+        <button id="closeClue" class="good">Mark Used + Close</button>
+        <button id="closeNoUse">Close</button>
+      </div>
+    </div>
+    <div class="q" id="modalText">—</div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="host.js"></script>
+</body>
+</html>

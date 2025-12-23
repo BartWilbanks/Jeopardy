@@ -1,0 +1,50 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Player — Jeopardy Live</title>
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .wrap{grid-template-columns:1fr}
+    .bigBtn{width:100%; padding:18px; font-size:18px; font-weight:900}
+    .center{max-width:520px;margin:0 auto}
+  </style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Jeopardy Live — Player</h1>
+    <small>Join a room code from the Host screen</small>
+  </div>
+  <div class="row">
+    <span class="pill" id="statusPill">Not connected</span>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="card center">
+    <div class="row">
+      <input id="code" placeholder="Room Code" style="flex:1;text-transform:uppercase" maxlength="6" />
+      <button class="primary" id="join">Join</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <input id="name" placeholder="Your name" style="flex:1" />
+      <select id="team">
+        <option value="0">Team 1</option>
+        <option value="1">Team 2</option>
+        <option value="2">Team 3</option>
+      </select>
+    </div>
+
+    <div style="margin-top:14px">
+      <button class="primary bigBtn" id="buzz" disabled>BUZZ</button>
+      <div style="margin-top:10px" id="playerInfo"><small>Join a room to enable buzzing (in Buzzer mode).</small></div>
+    </div>
+  </div>
+</div>
+
+<script src="/socket.io/socket.io.js"></script>
+<script src="player.js"></script>
+</body>
+</html>
